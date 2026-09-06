@@ -1,0 +1,30 @@
+{
+  "name": "dsh-url-trace",
+  "version": "1.0.0",
+  "description": "网址足迹：自动记录从 DSH 打开过的每个网址（常用排序 / 最近 / 收藏 / 搜索），在聊天输入栏提供随时查看入口。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wqy-cell/dsh-url-trace"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "history",
+    "bookmarks"
+  ],
+  "license": "MIT"
+}

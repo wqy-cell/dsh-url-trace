@@ -1,14 +1,11 @@
-// dsh-url-trace 客户端 bundle 的本地模拟测试：
+// dsh-task-flow 客户端 bundle 的本地模拟测试：
 // 模拟 DSH 客户端环境（模块加载器 + 最小 ctx + react/react-dom 真实包），
-// 完整走一遍 物化 → apply → 插槽声明 → 按钮渲染。
-// 依赖解析：优先环境变量 DSH_TEST_NODE_MODULES，其次 DSH_HOME，最后 ~/.dsh。
+// 完整走一遍 物化 → apply → 插槽声明 → 按钮/面板渲染 + 流程状态机逻辑。
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const vm = require("vm");
 
-const NODE_MODULES = process.env.DSH_TEST_NODE_MODULES
-  || path.join(process.env.DSH_HOME || path.join(os.homedir(), ".dsh"), "profiles", "node_modules");
+const NODE_MODULES = "C:/Users/wqy20/.dsh/profiles/node_modules";
 const BUNDLE = path.resolve(__dirname, "../lib/client.js");
 
 let failures = 0;
@@ -22,7 +19,8 @@ function makeElementMock() {
   return {
     dataset: {}, textContent: "", isConnected: true, style: {},
     appendChild() {}, remove() {}, addEventListener() {}, removeEventListener() {},
-    querySelectorAll() { return []; }
+    querySelectorAll() { return []; }, closest() { return null; },
+    getBoundingClientRect() { return { left: 0, top: 0, width: 0, height: 0 }; }
   };
 }
 const documentMock = {
@@ -39,29 +37,10 @@ const localStorageMock = (() => {
     removeItem: (k) => { delete data[k]; }
   };
 })();
-// 预置旧版存量数据：同一页面的 URL 变体 + 收藏状态，验证迁移合并
-localStorageMock.setItem("dsh-url-trace:v1", JSON.stringify({
-  v: 1,
-  sites: {
-    "https://www.bilibili.com/video/BV1X/?spm_id_from=1": {
-      urlKey: "https://www.bilibili.com/video/BV1X/?spm_id_from=1",
-      url: "https://www.bilibili.com/video/BV1X/?spm_id_from=1",
-      host: "www.bilibili.com", title: "A", firstTs: 1, lastTs: 2, count: 3, pinned: true, tags: []
-    },
-    "https://bilibili.com/video/BV1X": {
-      urlKey: "https://bilibili.com/video/BV1X",
-      url: "https://bilibili.com/video/BV1X",
-      host: "bilibili.com", title: "B", firstTs: 3, lastTs: 4, count: 4, pinned: false, tags: []
-    }
-  },
-  visits: [{ urlKey: "https://www.bilibili.com/video/BV1X/?spm_id_from=1", url: "https://www.bilibili.com/video/BV1X/?spm_id_from=1", host: "www.bilibili.com", title: "A", ts: 1 }],
-  pins: {}
-}));
 const windowMock = {
   __ModuleLoader__: { load: (handoff) => { throw new Error("window.__ModuleLoader__.load replaced before bundle run"); } },
   confirm: () => true
 };
-
 let handoff = null;
 windowMock.__ModuleLoader__.load = (h) => { handoff = h; };
 
@@ -81,7 +60,7 @@ sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 try {
   vm.runInContext(fs.readFileSync(BUNDLE, "utf8"), sandbox, { filename: "client.js" });
-  check("bundle 执行并注册 factory", handoff !== null && handoff.id === "dsh-url-trace");
+  check("bundle 执行并注册 factory", handoff !== null && handoff.id === "dsh-task-flow");
 } catch (e) {
   check("bundle 执行并注册 factory", false, e.stack);
   process.exit(1);
@@ -110,18 +89,87 @@ try {
 check("exports.apply 存在", typeof pluginModule.apply === "function");
 check("exports.inject = ['slots']", Array.isArray(pluginModule.inject) && pluginModule.inject[0] === "slots");
 
-/* ---------- 场景 0：存量数据迁移去重 ---------- */
-console.log("场景 0：存量数据迁移去重");
-const S0 = pluginModule.__test.getStore();
-check("迁移后合并为 1 条", Object.keys(S0.sites).length === 1, JSON.stringify(Object.keys(S0.sites)));
-check("次数相加 3+4=7", S0.sites["https://bilibili.com/video/BV1X"] && S0.sites["https://bilibili.com/video/BV1X"].count === 7);
-check("收藏状态迁移", S0.pins["https://bilibili.com/video/BV1X"] === true);
-check("visits 重新映射", S0.visits.length === 1 && S0.visits[0].urlKey === "https://bilibili.com/video/BV1X");
-check("normalizeUrl 尾斜杠", pluginModule.__test.normalizeUrl("https://x.com/path/") === "https://x.com/path");
-check("normalizeUrl 去追踪参数", pluginModule.__test.normalizeUrl("https://x.com/p?spm_id_from=1&vd_source=a&id=9") === "https://x.com/p?id=9");
-check("dedupKey 去 www", pluginModule.__test.dedupKey("https://www.douyin.com/") === "https://douyin.com");
+const T = pluginModule.__test;
+function resetStore() {
+  const S = T.getStore();
+  S.flows = [T.makeDemoFlow(Date.now())];
+  S.activeFlowId = "demo";
+  return S.flows[0];
+}
 
-/* ---------- 模拟 ctx（slots 声明等待 + effect 立即执行） ---------- */
+/* ---------- 场景 0：首次加载自动播种示例流程 ---------- */
+console.log("场景 0：首次加载自动播种示例流程");
+const S0 = T.getStore();
+check("activeFlowId = demo", S0.activeFlowId === "demo");
+check("示例流程 7 个节点", S0.flows.length === 1 && S0.flows[0].nodes.length === 7, "len=" + (S0.flows[0] && S0.flows[0].nodes.length));
+const st0 = T.replay(S0.flows[0]);
+check("初始状态：n1 已完成、当前 n2", st0.done.has("n1") && st0.active === "n2", "active=" + st0.active);
+check("n2 是 3 分支节点", S0.flows[0].nodes.find((n) => n.id === "n2").branches.length === 3);
+
+/* ---------- 场景 1：状态机（选择分支 / 推进 / 回退 / 重开 / 跳过） ---------- */
+console.log("场景 1：流程状态机");
+let flow = resetStore();
+T.chooseBranch(flow, "n2", "n3b");
+let st = T.replay(flow);
+check("选观点评论 → 当前 n3b", st.active === "n3b" && st.chosen["n2"] === "n3b", "active=" + st.active);
+const unch = T.unchosenSet(flow, st.chosen);
+check("未选支线被标记", unch.has("n3a") && unch.has("n3c") && !unch.has("n4"), [...unch].join(","));
+T.completeTask(flow, "n3b");
+T.completeTask(flow, "n4");
+st = T.replay(flow);
+check("连过两关 → 当前 n5", st.active === "n5");
+T.completeTask(flow, "n5");
+st = T.replay(flow);
+check("完成终点 → active=null（流程完成）", st.active === null && st.done.size === 5, "done=" + st.done.size);
+
+T.rollbackToEvent(flow, "n4");
+st = T.replay(flow);
+check("回退到 n4 → n5 未完成", st.active === "n4" && !st.done.has("n5"), "active=" + st.active);
+
+T.rollbackOne(flow);
+st = T.replay(flow);
+check("回退一步 → 回到 n3b（撤销 n3b 的完成）", st.active === "n3b" && !st.done.has("n3b") && !st.done.has("n4"), "active=" + st.active);
+
+T.rollbackToEvent(flow, "n2");
+st = T.replay(flow);
+check("回退到 n2 → 分支重置、当前 n2", st.active === "n2" && !st.chosen["n2"] && !st.done.has("n2"));
+
+T.restartFlow(flow);
+st = T.replay(flow);
+check("重新开始 → 当前 n1", st.active === "n1" && st.done.size === 0);
+
+T.skipNode(flow, "n1");
+st = T.replay(flow);
+check("跳过 n1 → 当前 n2、n1 记为跳过", st.active === "n2" && st.skipped.has("n1") && !st.done.has("n1"));
+
+/* ---------- 场景 2：BFS 排序 ---------- */
+console.log("场景 2：BFS 排序");
+flow = resetStore();
+const ordered = T.orderedIds(flow);
+check("顺序为 n1,n2,n3a,n3b,n3c,n4,n5", ordered.join(",") === "n1,n2,n3a,n3b,n3c,n4,n5", ordered.join(","));
+
+/* ---------- 场景 3：导入 / 导出校验 ---------- */
+console.log("场景 3：导入校验");
+const before = T.getStore().flows.length;
+check("缺 nodes → 报错", T.importFlowJson({}).ok === false);
+check("缺 title → 报错", T.importFlowJson({ nodes: [{ id: "a" }] }).ok === false);
+const r1 = T.importFlowJson({
+  title: "测试流程",
+  nodes: [
+    { id: "a", title: "甲", next: "b" },
+    { id: "b", title: "乙", kind: "choice", branches: [{ label: "左", to: "c" }, { label: "坏", to: "zzz" }] },
+    { id: "c", title: "丙" },
+    { title: "丁" } // 无 id → 自动补
+  ]
+});
+check("合法导入 ok", r1.ok === true && T.getStore().flows.length === before + 1);
+const imp = T.getStore().flows[T.getStore().flows.length - 1];
+check("坏分支目标被丢弃", imp.nodes.find((n) => n.id === "b").branches.length === 1);
+check("无 id 节点自动补 id", imp.nodes.length === 4 && imp.nodes[3].id === "n4");
+check("导入后成为当前流程", T.getStore().activeFlowId === r1.id);
+
+/* ---------- 场景 4：apply + 插槽声明（两种时序） ---------- */
+console.log("场景 4：apply 与插槽时序");
 function makeCtx() {
   const slots = {
     declared: new Set(),
@@ -149,148 +197,57 @@ function makeCtx() {
   };
   return ctx;
 }
-
-/* ---------- 场景 1：sidebar 尚未声明插槽时 apply（真实启动顺序） ---------- */
-console.log("场景 1：apply 时 sidebar.footer.action 尚未声明（真实启动顺序）");
 const ctx1 = makeCtx();
-try {
-  pluginModule.apply(ctx1);
-  check("apply 不抛异常", true);
-} catch (e) {
-  check("apply 不抛异常", false, e.stack);
-}
+try { pluginModule.apply(ctx1); check("apply（未声明插槽）不抛异常", true); }
+catch (e) { check("apply（未声明插槽）不抛异常", false, e.stack); }
 check("未声明时 register 不提前调用", ctx1.slots.registrations.length === 0);
-
-try { ctx1.slots.declare("conversation.input.left"); } catch (e) { check("插槽声明后 inject 回调执行", false, e.stack); }
+try { ctx1.slots.declare("sidebar.footer.action"); } catch (e) { check("插槽声明后 inject 回调执行", false, e.stack); }
 check("插槽声明后 register 被调用", ctx1.slots.registrations.length === 1);
-if (ctx1.slots.registrations.length === 1) {
-  const reg = ctx1.slots.registrations[0];
-  check("注册选项正确", reg.options.name === "conversation.input.left" && reg.options.id === "dsh-url-trace.view", JSON.stringify(reg.options));
+const reg = ctx1.slots.registrations[0];
+check("注册选项正确", reg && reg.options.name === "sidebar.footer.action" && reg.options.id === "dsh-task-flow.view", reg && JSON.stringify(reg.options));
 
-  /* ---------- 渲染按钮（wide=true / false / 输入栏紧凑版） ---------- */
-  try {
-    const htmlWide = reactDomServer.renderToString(react.createElement(reg.component, { wide: true }));
-    console.log("  HTML(wide): " + JSON.stringify(htmlWide));
-    check("按钮渲染（展开态）不抛异常", true);
-    check("展开态包含「网址足迹」", htmlWide.includes("网址足迹"), "len=" + htmlWide.length);
-    const htmlRail = reactDomServer.renderToString(react.createElement(reg.component, { wide: false }));
-    console.log("  HTML(rail): " + JSON.stringify(htmlRail));
-    check("按钮渲染（收起态）不抛异常", true);
-    check("收起态只显示图标", htmlRail.includes("urt-button-icon") && !htmlRail.includes("urt-button-label"), "len=" + htmlRail.length);
-    const htmlComp = reactDomServer.renderToString(react.createElement(reg.component, {}));
-    check("输入栏工具行按钮渲染（紧凑图标版）", htmlComp.includes("urt-button-composer") && htmlComp.includes("urt-button-icon"));
-  } catch (e) {
-    check("按钮渲染", false, e.stack);
-  }
-}
-
-/* ---------- 场景 2：apply 时插槽已声明 ---------- */
-console.log("场景 2：apply 时 conversation.input.left 已声明");
 const ctx2 = makeCtx();
-ctx2.slots.declared.add("conversation.input.left");
-try {
-  pluginModule.apply(ctx2);
-  check("apply 不抛异常", true);
-  check("已声明时立即 register", ctx2.slots.registrations.length === 1);
-} catch (e) {
-  check("apply（已声明）", false, e.stack);
+ctx2.slots.declared.add("sidebar.footer.action");
+try { pluginModule.apply(ctx2); check("apply（已声明插槽）立即 register", ctx2.slots.registrations.length === 1); }
+catch (e) { check("apply（已声明插槽）", false, e.stack); }
+
+/* ---------- 场景 5：组件 SSR 渲染 ---------- */
+console.log("场景 5：组件 SSR 渲染");
+function render(comp, props) {
+  return reactDomServer.renderToString(react.createElement(comp, props || {}));
 }
+flow = resetStore();
+try {
+  const htmlWide = render(T.components.SidebarButton, { wide: true });
+  check("按钮渲染（展开态）不抛异常", true);
+  check("展开态包含「任务星图」", htmlWide.includes("任务星图"));
+  check("展开态含进度环", htmlWide.includes("tf-ring"));
+  const htmlRail = render(T.components.SidebarButton, { wide: false });
+  check("按钮渲染（收起态）不抛异常", true);
+  check("收起态只显示图标", htmlRail.includes("tf-button-icon") && !htmlRail.includes("tf-button-label"));
+} catch (e) { check("按钮渲染", false, e.stack); }
 
-/* ---------- 场景 3：Edge 历史合并 ---------- */
-console.log("场景 3：Edge 历史合并与收藏/隐藏");
-const T = pluginModule.__test;
-// 清掉场景 0 的迁移数据，构造干净环境
-const S3 = T.getStore();
-S3.sites = {};
-S3.visits = [];
-S3.pins = {};
-S3.ignored = {};
-S3.autoPinExcluded = {};
-S3.categories = {};
-S3.lastOrganize = null;
-T.recordVisit("https://a.example.com/page", "DSH 页面");
-T.togglePin("https://a.example.com/page");
-const merged = T.mergedEntries([
-  { url: "https://a.example.com/page?utm_source=x", title: "Edge 同一页", count: 7, lastTs: Date.now() - 5000 },
-  { url: "https://b.example.com/", title: "纯 Edge 页", count: 3, lastTs: Date.now() - 1000 }
-]);
-console.log("  merged keys: " + JSON.stringify(merged.map((m) => [m.urlKey, m.source, m.count])));
-check("合并后 2 条", merged.length === 2, "len=" + merged.length);
-const a = merged.find((m) => m.urlKey === "https://a.example.com/page");
-check("同 URL 次数相加 (1+7=8)", !!a && a.count === 8, a ? "count=" + a.count : "missing");
-check("跨源标记 both", !!a && a.source === "both");
-check("收藏状态保留", !!a && a.pinned === true);
-const b = merged.find((m) => m.urlKey === "https://b.example.com");
-check("纯 Edge 标记 edge", !!b && b.source === "edge");
-T.removeEntry(b);
-const after = T.mergedEntries([{ url: "https://b.example.com/", title: "B", count: 3, lastTs: Date.now() }]);
-check("隐藏后不再出现", !after.some((m) => m.urlKey === "https://b.example.com"));
+try {
+  const html = render(T.components.PanelContent, { onClose: () => {} });
+  check("面板渲染不抛异常", true, "len=" + html.length);
+  check("面板含「任务星图」标题", html.includes("任务星图"));
+  check("含进度 1/7", html.includes("1/7"));
+  check("当前节点标「你在这里」", html.includes("你在这里"));
+  check("含 3 张分支卡牌（干货教程/观点评论/故事叙事）", html.includes("干货教程") && html.includes("观点评论") && html.includes("故事叙事"));
+  check("含「如何继续」详情", html.includes("如何继续"));
+  check("n1→n2 段亮起且带流光", html.includes("tf-seg lit pulse"), "seg class 存在");
+} catch (e) { check("面板渲染", false, e.stack); }
 
-/* ---------- 场景 4：分类与自动收藏 ---------- */
-console.log("场景 4：规则分类与自动收藏");
-check("bilibili → video", T.ruleCategory("https://www.bilibili.com/video/BV1xx", "某视频") === "video");
-check("github → dev", T.ruleCategory("https://github.com/x/y", "") === "dev");
-check("未知 → other", T.ruleCategory("https://unknown-random-site.example.com/thing", "") === "other");
-
-const S = T.getStore();
-// 重置场景 3 的数据，构造自动收藏候选
-S.sites = {};
-S.visits = [];
-S.pins = {};
-S.ignored = {};
-S.autoPinExcluded = {};
-S.categories = {};
-S.lastOrganize = null;
-S.settings = { autoPin: true, autoPinMinCount: 5, autoPinRecentDays: 30, excludeCategories: ["search", "other"] };
-const now4 = Date.now();
-S.sites["https://www.bilibili.com/video/BV1xx"] = { urlKey: "https://www.bilibili.com/video/BV1xx", url: "https://www.bilibili.com/video/BV1xx", host: "www.bilibili.com", title: "某视频", firstTs: now4, lastTs: now4, count: 8, pinned: false, tags: [] };
-S.sites["https://www.baidu.com/s?wd=x"] = { urlKey: "https://www.baidu.com/s?wd=x", url: "https://www.baidu.com/s?wd=x", host: "www.baidu.com", title: "x_百度搜索", firstTs: now4, lastTs: now4, count: 8, pinned: false, tags: [] };
-S.sites["https://rare.example.com/a"] = { urlKey: "https://rare.example.com/a", url: "https://rare.example.com/a", host: "rare.example.com", title: "A", firstTs: now4, lastTs: now4, count: 3, pinned: false, tags: [] };
-S.sites["https://old.example.com/b"] = { urlKey: "https://old.example.com/b", url: "https://old.example.com/b", host: "old.example.com", title: "B", firstTs: now4 - 60 * 86400000, lastTs: now4 - 60 * 86400000, count: 9, pinned: false, tags: [] };
-const all4 = T.mergedEntries([]);
-const pinned = T.autoPin(all4);
-check("视频类 8 次 → 自动收藏", pinned.includes("https://www.bilibili.com/video/BV1xx"), JSON.stringify(pinned));
-check("搜索类不计", !pinned.includes("https://www.baidu.com/s?wd=x"));
-check("次数不足不计", !pinned.includes("https://rare.example.com/a"));
-check("过期不计", !pinned.includes("https://old.example.com/b"));
-check("收藏状态已写入", T.isPinned("https://www.bilibili.com/video/BV1xx") === true);
-
-// 手动取消 → 豁免，再次整理不再收藏
-T.togglePin("https://www.bilibili.com/video/BV1xx");
-check("手动取消后不再收藏", T.isPinned("https://www.bilibili.com/video/BV1xx") === false);
-const pinned2 = T.autoPin(T.mergedEntries([]));
-check("豁免名单生效", !pinned2.includes("https://www.bilibili.com/video/BV1xx"));
-
-// 撤销上次整理
-T.undoOrganize();
-check("撤销后快照清空", S.lastOrganize === null);
-
-/* ---------- 场景 5：URL 变体去重（www / 追踪参数 / 尾斜杠） ---------- */
-console.log("场景 5：URL 变体去重");
-S.sites = {};
-S.visits = [];
-S.pins = {};
-S.ignored = {};
-S.autoPinExcluded = {};
-S.categories = {};
-S.lastOrganize = null;
-T.recordVisit("https://www.bilibili.com/video/BV1X/?spm_id_from=333.999&vd_source=abc", "视频A");
-S.sites["https://bilibili.com/video/BV1X"].lastTs = Date.now() - 20 * 60000; // 越过去重窗口
-T.recordVisit("https://bilibili.com/video/BV1X", "视频B");
-const m5 = T.mergedEntries([{ url: "https://www.bilibili.com/video/BV1X/?ug_source=mz", title: "Edge 同页", count: 5, lastTs: Date.now() - 100 }]);
-check("变体合并为 1 条", m5.length === 1, "len=" + m5.length);
-check("次数相加 (2+5=7)", m5[0].count === 7, "count=" + m5[0].count);
-check("key 为裸域无参数", m5[0].urlKey === "https://bilibili.com/video/BV1X", m5[0].urlKey);
-check("来源标记 both", m5[0].source === "both");
-
-/* ---------- 场景 6：面板拖拽边界 ---------- */
-console.log("场景 6：面板拖拽边界（clampPanel）");
-const d1 = T.clampPanel(500, 200, 400, 600, 1200, 800);
-check("常规位置不夹紧", d1.x === 500 && d1.y === 200);
-const d2 = T.clampPanel(-999, -999, 400, 600, 1200, 800);
-check("左上越界夹紧", d2.x === 60 - 400 && d2.y === 60 - 600, d2.x + "," + d2.y);
-const d3 = T.clampPanel(9999, 9999, 400, 600, 1200, 800);
-check("右下越界夹紧", d3.x === 1200 - 60 && d3.y === 800 - 60, d3.x + "," + d3.y);
+// 完成全部流程后的面板
+T.chooseBranch(flow, "n2", "n3a");
+T.completeTask(flow, "n3a");
+T.completeTask(flow, "n4");
+T.completeTask(flow, "n5");
+try {
+  const html = render(T.components.PanelContent, { onClose: () => {} });
+  check("完成态面板含「全部完成」", html.includes("全部完成"));
+  check("完成态含奖杯与重新开始", html.includes("tf-trophy") && html.includes("重新开始"));
+} catch (e) { check("完成态面板渲染", false, e.stack); }
 
 console.log(failures === 0 ? "== 全部通过 ==" : "== 有 " + failures + " 项失败 ==");
 process.exit(failures === 0 ? 0 : 1);

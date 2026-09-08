@@ -1,7 +1,8 @@
 {
-  "name": "dsh-url-trace",
+  "name": "dsh-task-flow",
   "version": "1.0.0",
-  "description": "网址足迹：自动记录从 DSH 打开过的每个网址（常用排序 / 最近 / 收藏 / 搜索），在聊天输入栏提供随时查看入口。",
+  "private": true,
+  "description": "任务星图：樱花主题的任务流程可视化插件 — 点开按钮即见任务进行到哪一步、如何继续、有哪些分支",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -15,16 +16,5 @@
       "immediately": true
     }
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/wqy-cell/dsh-url-trace"
-  },
-  "keywords": [
-    "dsh",
-    "deepseek-harness",
-    "plugin",
-    "history",
-    "bookmarks"
-  ],
   "license": "MIT"
 }
